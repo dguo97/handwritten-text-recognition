@@ -1,18 +1,15 @@
 import os
-import io
-import contextlib
-import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
-from scipy.ndimage import center_of_mass
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
 
 import tkinter as tk
+from PIL import Image, ImageDraw, ImageFilter
+import numpy as np
+from scipy.ndimage import center_of_mass
 
 # ==========================================
 # 1. Architecture & Augmentation Setup
@@ -75,7 +72,7 @@ optimizer = optim.Adam(model.parameters(), lr=0.001)
 # 2. Model Training
 # ==========================================
 print("Training model (5 epochs)...")
-for epoch in range(1):
+for epoch in range(5):
     model.train()
     running_loss = 0.0
     for data, target in train_loader:
@@ -91,8 +88,10 @@ for epoch in range(1):
 model.eval()
 print("Training complete!")
 
+# Save weights checkpoint
 torch.save(model.state_dict(), "mnist_cnn.pth")
 
+# Helper function for preprocessing drawing input
 def preprocess_canvas_image(pil_img):
     bbox = pil_img.getbbox()
     if bbox is None:
@@ -113,7 +112,7 @@ def preprocess_canvas_image(pil_img):
         shift_y = np.round(14.0 - cy).astype(int)
         img_np = np.roll(img_np, (shift_y, shift_x), axis=(0, 1))
 
-    img_tensor = torch.tensor(img_np, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+    img_tensor = torch.tensor(img_np).unsqueeze(0).unsqueeze(0)
     img_tensor = (img_tensor - 0.5) / 0.5
     return img_tensor
 
@@ -207,7 +206,7 @@ class DigitRecognizerGUI:
         probs_np = probabilities.numpy() * 100
         ranked_predictions = sorted(enumerate(probs_np), key=lambda x: x[1], reverse=True)
 
-        ranking_text = "Rank    Digit    Confidence\n" + "-" * 26 + "\n"
+        ranking_text = "Rank  Digit    Confidence\n" + "-" * 26 + "\n"
         for rank, (digit, prob) in enumerate(ranked_predictions, 1):
             ranking_text += f" #{rank:<2}    [{digit}]     {prob:5.1f}%\n"
 
@@ -226,27 +225,11 @@ def launch_gradio_app(model):
     import gradio as gr
 
     def predict_gradio(sketch_dict):
-        image = sketch_dict.get("composite", sketch_dict.get("image", None)) if isinstance(sketch_dict, dict) else sketch_dict
+        image = sketch_dict["composite"]
         if image is None:
             return "Please draw a digit."
-
-        if isinstance(image, np.ndarray):
-            if image.ndim == 3 and image.shape[2] == 4:
-                alpha = image[:, :, 3]
-                pil_img = Image.fromarray(alpha.astype("uint8"))
-            else:
-                pil_img = Image.fromarray(image.astype("uint8")).convert("L")
-                img_np = np.array(pil_img)
-                if np.mean(img_np) > 127:
-                    pil_img = Image.fromarray(255 - img_np)
-        elif isinstance(image, Image.Image):
-            pil_img = image.convert("L")
-            img_np = np.array(pil_img)
-            if np.mean(img_np) > 127:
-                pil_img = Image.fromarray(255 - img_np)
-        else:
-            return "Invalid image format."
-
+        
+        pil_img = Image.fromarray(image.astype("uint8")).convert("L")
         img_tensor = preprocess_canvas_image(pil_img)
         if img_tensor is None:
             return "Canvas is empty!"
@@ -266,20 +249,13 @@ def launch_gradio_app(model):
         title="Handwritten Digit Recognizer",
         description="Draw a digit (0–9) on the canvas to see predictions."
     )
-
-    f = io.StringIO()
-    with contextlib.redirect_stdout(f):
-        app, local_url, share_url = interface.launch(share=True, prevent_thread_lock=True)
-
-    if share_url:
-        print(f"\n* Running on public URL: {share_url}\n")
-
-    interface.block_thread()
+    interface.launch(share=True)
 
 # ==========================================
 # 5. Execution Entry Point
 # ==========================================
 if __name__ == "__main__":
+    # If running on Windows desktop or an environment with a DISPLAY server, open Tkinter
     if os.environ.get("DISPLAY", "") != "" or os.name == "nt":
         try:
             print("Opening desktop Tkinter GUI...")
