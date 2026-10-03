@@ -220,7 +220,7 @@ class DigitRecognizerGUI:
         )
 
 # ==========================================
-# 4. Web Interface Implementation (Gradio)
+# 4. Web Interface Implementation (Cloud / Gradio)
 # ==========================================
 def launch_gradio_app(model):
     import gradio as gr
@@ -267,10 +267,14 @@ def launch_gradio_app(model):
         description="Draw a digit (0–9) on the canvas to see predictions."
     )
 
-    try:
-        interface.launch(share=False, server_name="127.0.0.1", server_port=7860)
-    except Exception:
-        interface.launch(share=True)
+    f = io.StringIO()
+    with contextlib.redirect_stdout(f):
+        app, local_url, share_url = interface.launch(share=True, prevent_thread_lock=True)
+
+    if share_url:
+        print(f"\n* Running on public URL: {share_url}\n")
+
+    interface.block_thread()
 
 # ==========================================
 # 5. Execution Entry Point
@@ -284,5 +288,5 @@ if __name__ == "__main__":
             print(f"Tkinter failed ({e}). Falling back to Gradio web interface...")
             launch_gradio_app(model)
     else:
-        print("Headless cloud environment detected. Launching Gradio web interface...")
+        print("Headless cloud environment detected (e.g., Google Colab). Launching Gradio web interface...")
         launch_gradio_app(model)
