@@ -15,7 +15,7 @@ from torchvision import datasets, transforms
 import tkinter as tk
 
 # ==========================================
-# 1. Architecture & Transforms Setup
+# 1. Architecture & Augmentation Setup
 # ==========================================
 train_transform = transforms.Compose([
     transforms.RandomRotation(12),
@@ -28,6 +28,13 @@ test_transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize((0.5,), (0.5,))
 ])
+
+print("Loading dataset...")
+train_data = datasets.MNIST(root='./data', train=True, download=True, transform=train_transform)
+test_data = datasets.MNIST(root='./data', train=False, download=True, transform=test_transform)
+
+train_loader = DataLoader(train_data, batch_size=64, shuffle=True)
+test_loader = DataLoader(test_data, batch_size=1000, shuffle=False)
 
 class EnhancedCNN(nn.Module):
     def __init__(self):
@@ -60,43 +67,31 @@ class EnhancedCNN(nn.Module):
         x = self.fc2(x)
         return x
 
-def train_and_save_model(model_path="mnist_cnn.pth"):
-    print("Loading dataset for training...")
-    train_data = datasets.MNIST(root='./data', train=True, download=True, transform=train_transform)
-    train_loader = DataLoader(train_data, batch_size=64, shuffle=True)
+model = EnhancedCNN()
+loss_fn = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-    model = EnhancedCNN()
-    loss_fn = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+# ==========================================
+# 2. Model Training
+# ==========================================
+print("Training model (5 epochs)...")
+for epoch in range(5):
+    model.train()
+    running_loss = 0.0
+    for data, target in train_loader:
+        optimizer.zero_grad()
+        output = model(data)
+        loss = loss_fn(output, target)
+        loss.backward()
+        optimizer.step()
+        running_loss += loss.item()
+    
+    print(f"Epoch {epoch+1}/5 complete. Loss: {running_loss/len(train_loader):.4f}")
 
-    print("Training model (5 epochs)...")
-    for epoch in range(5):
-        model.train()
-        running_loss = 0.0
-        for data, target in train_loader:
-            optimizer.zero_grad()
-            output = model(data)
-            loss = loss_fn(output, target)
-            loss.backward()
-            optimizer.step()
-            running_loss += loss.item()
-        
-        print(f"Epoch {epoch+1}/5 complete. Loss: {running_loss/len(train_loader):.4f}")
+model.eval()
+print("Training complete!")
 
-    torch.save(model.state_dict(), model_path)
-    print(f"Training complete! Saved weights to {model_path}")
-    return model
-
-def load_or_train_model(model_path="mnist_cnn.pth"):
-    model = EnhancedCNN()
-    if os.path.exists(model_path):
-        print(f"Loading existing checkpoint from {model_path}...")
-        model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
-        model.eval()
-    else:
-        model = train_and_save_model(model_path)
-        model.eval()
-    return model
+torch.save(model.state_dict(), "mnist_cnn.pth")
 
 def preprocess_canvas_image(pil_img):
     bbox = pil_img.getbbox()
@@ -123,7 +118,7 @@ def preprocess_canvas_image(pil_img):
     return img_tensor
 
 # ==========================================
-# 2. GUI Implementation (Desktop / Tkinter)
+# 3. GUI Implementation (Desktop / Tkinter)
 # ==========================================
 class DigitRecognizerGUI:
     def __init__(self, model):
@@ -225,20 +220,13 @@ class DigitRecognizerGUI:
         )
 
 # ==========================================
-# 3. Web Interface Implementation (Gradio)
+# 4. Web Interface Implementation (Gradio)
 # ==========================================
 def launch_gradio_app(model):
     import gradio as gr
 
-    def predict_gradio(sketch):
-        if sketch is None:
-            return "Please draw a digit."
-
-        if isinstance(sketch, dict):
-            image = sketch.get("composite", sketch.get("layers", [None])[0] if sketch.get("layers") else sketch.get("image", None))
-        else:
-            image = sketch
-
+    def predict_gradio(sketch_dict):
+        image = sketch_dict.get("composite", sketch_dict.get("image", None)) if isinstance(sketch_dict, dict) else sketch_dict
         if image is None:
             return "Please draw a digit."
 
@@ -279,21 +267,15 @@ def launch_gradio_app(model):
         description="Draw a digit (0–9) on the canvas to see predictions."
     )
 
-    f = io.StringIO()
-    with contextlib.redirect_stdout(f):
-        app, local_url, share_url = interface.launch(share=True, prevent_thread_lock=True)
-
-    if share_url:
-        print(f"\n* Running on public URL: {share_url}\n")
-
-    interface.block_thread()
+    try:
+        interface.launch(share=False, server_name="127.0.0.1", server_port=7860)
+    except Exception:
+        interface.launch(share=True)
 
 # ==========================================
-# 4. Execution Entry Point
+# 5. Execution Entry Point
 # ==========================================
 if __name__ == "__main__":
-    model = load_or_train_model("mnist_cnn.pth")
-
     if os.environ.get("DISPLAY", "") != "" or os.name == "nt":
         try:
             print("Opening desktop Tkinter GUI...")
@@ -302,5 +284,5 @@ if __name__ == "__main__":
             print(f"Tkinter failed ({e}). Falling back to Gradio web interface...")
             launch_gradio_app(model)
     else:
-        print("Headless cloud environment detected (e.g., Google Colab). Launching Gradio web interface...")
+        print("Headless cloud environment detected. Launching Gradio web interface...")
         launch_gradio_app(model)
