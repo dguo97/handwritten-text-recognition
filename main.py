@@ -1,6 +1,8 @@
 import os
 import io
-import contextlib
+import base64
+import threading
+import subprocess
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 from scipy.ndimage import center_of_mass
@@ -12,7 +14,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
-import tkinter as tk
+from flask import Flask, render_template_string, request, jsonify
 
 # ==========================================
 # 1. Architecture & Augmentation Setup
@@ -74,7 +76,7 @@ optimizer = optim.Adam(model.parameters(), lr=0.001)
 # ==========================================
 # 2. Model Training
 # ==========================================
-print("Training model (1.0 epochs)...")
+print("Training model (2.0 epochs)...")
 for epoch in range(1):
     model.train()
     running_loss = 0.0
@@ -90,7 +92,6 @@ for epoch in range(1):
 
 model.eval()
 print("Training complete!")
-
 torch.save(model.state_dict(), "mnist_cnn.pth")
 
 def preprocess_canvas_image(pil_img):
@@ -118,175 +119,130 @@ def preprocess_canvas_image(pil_img):
     return img_tensor
 
 # ==========================================
-# 3. GUI Implementation (Desktop / Tkinter)
+# 3. Flask Web Application Setup
 # ==========================================
-class DigitRecognizerGUI:
-    def __init__(self, model):
-        self.model = model
-        self.root = tk.Tk()
-        self.root.title("Handwritten Digit Recognizer")
+app = Flask(__name__)
 
-        main_frame = tk.Frame(self.root)
-        main_frame.pack(padx=10, pady=10)
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Digit Recognizer</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; background: #f4f4f9; margin-top: 50px; }
+        canvas { border: 3px solid #333; background: black; cursor: crosshair; border-radius: 8px; touch-action: none; }
+        .container { display: inline-block; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        button { padding: 10px 20px; font-size: 16px; margin: 10px 5px; cursor: pointer; border: none; border-radius: 5px; background: #007BFF; color: white; }
+        button:hover { background: #0056b3; }
+        #clear-btn { background: #dc3545; }
+        #clear-btn:hover { background: #a71d2a; }
+        #result { font-size: 20px; font-weight: bold; margin-top: 15px; color: #333; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Handwritten Digit Recognizer</h2>
+        <canvas id="paintCanvas" width="280" height="280"></canvas>
+        <div>
+            <button onclick="predictDigit()">Predict</button>
+            <button id="clear-btn" onclick="clearCanvas()">Clear</button>
+        </div>
+        <div id="result">Draw a digit and click Predict</div>
+    </div>
 
-        left_frame = tk.Frame(main_frame)
-        left_frame.pack(side=tk.LEFT, padx=10)
+    <script>
+        const canvas = document.getElementById('paintCanvas');
+        const ctx = canvas.getContext('2d');
+        let painting = false;
 
-        self.canvas = tk.Canvas(left_frame, width=280, height=280, bg="black")
-        self.canvas.pack(pady=5)
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 20;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
 
-        self.image = Image.new("L", (280, 280), "black")
-        self.draw = ImageDraw.Draw(self.image)
-        
-        self.canvas.bind("<B1-Motion>", self.paint)
-        self.canvas.bind("<ButtonRelease-1>", self.reset_prev_pos)
+        canvas.addEventListener('mousedown', (e) => { painting = true; draw(e); });
+        canvas.addEventListener('mouseup', () => { painting = false; ctx.beginPath(); });
+        canvas.addEventListener('mousemove', draw);
 
-        self.prev_x = None
-        self.prev_y = None
+        canvas.addEventListener('touchstart', (e) => { painting = true; draw(e.touches[0]); e.preventDefault(); });
+        canvas.addEventListener('touchend', () => { painting = false; ctx.beginPath(); });
+        canvas.addEventListener('touchmove', (e) => { draw(e.touches[0]); e.preventDefault(); });
 
-        btn_frame = tk.Frame(left_frame)
-        btn_frame.pack(pady=5)
+        function draw(e) {
+            if (!painting) return;
+            const rect = canvas.getBoundingClientRect();
+            ctx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(e.clientX - rect.left, e.clientY - rect.top);
+        }
 
-        self.btn_predict = tk.Button(btn_frame, text="Predict", command=self.predict_digit, font=("Arial", 11, "bold"))
-        self.btn_predict.pack(side=tk.LEFT, padx=5)
+        function clearCanvas() {
+            ctx.fillStyle = 'black';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            document.getElementById('result').innerText = "Draw a digit and click Predict";
+        }
 
-        self.btn_clear = tk.Button(btn_frame, text="Clear", command=self.clear_canvas, font=("Arial", 11))
-        self.btn_clear.pack(side=tk.LEFT, padx=5)
+        clearCanvas();
 
-        right_frame = tk.LabelFrame(main_frame, text=" Class Probabilities (High → Low) ", font=("Arial", 11, "bold"))
-        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10)
+        function predictDigit() {
+            const dataURL = canvas.toDataURL('image/png');
+            fetch('/predict', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image: dataURL })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    document.getElementById('result').innerText = data.error;
+                } else {
+                    document.getElementById('result').innerText = `Prediction: ${data.top_digit} (${data.top_conf}%)`;
+                }
+            });
+        }
+    </script>
+</body>
+</html>
+"""
 
-        self.proba_label = tk.Label(
-            right_frame, 
-            text="Draw a digit\nand click Predict", 
-            font=("Courier", 11), 
-            justify=tk.LEFT,
-            anchor="nw"
-        )
-        self.proba_label.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+@app.route("/")
+def index():
+    return render_template_string(HTML_TEMPLATE)
 
-        self.label_result = tk.Label(self.root, text="Draw a digit (0-9) to see predictions.", font=("Arial", 13, "bold"))
-        self.label_result.pack(pady=10)
+@app.route("/predict", methods=["POST"])
+def predict():
+    data = request.get_json()
+    image_data = data["image"]
+    
+    header, encoded = image_data.split(",", 1)
+    binary_data = base64.b64decode(encoded)
+    
+    pil_img = Image.open(io.BytesIO(binary_data)).convert("L")
+    
+    img_tensor = preprocess_canvas_image(pil_img)
+    if img_tensor is None:
+        return jsonify({"error": "Canvas is empty!"})
 
-        self.root.mainloop()
+    model.eval()
+    with torch.no_grad():
+        output = model(img_tensor)
+        probabilities = F.softmax(output, dim=1)[0]
 
-    def paint(self, event):
-        brush_size = 20
-        if self.prev_x and self.prev_y:
-            self.canvas.create_line(self.prev_x, self.prev_y, event.x, event.y,
-                                    fill="white", width=brush_size, capstyle=tk.ROUND, smooth=True)
-            self.draw.line([self.prev_x, self.prev_y, event.x, event.y],
-                           fill="white", width=brush_size, joint="round")
-            
-        self.prev_x = event.x
-        self.prev_y = event.y
+    probs_np = probabilities.numpy() * 100
+    ranked_predictions = sorted(enumerate(probs_np), key=lambda x: x[1], reverse=True)
+    
+    top_digit, top_conf = ranked_predictions[0]
 
-    def reset_prev_pos(self, event):
-        self.prev_x = None
-        self.prev_y = None
+    return jsonify({
+        "top_digit": int(top_digit),
+        "top_conf": round(float(top_conf), 1)
+    })
 
-    def clear_canvas(self):
-        self.canvas.delete("all")
-        self.image = Image.new("L", (280, 280), "black")
-        self.draw = ImageDraw.Draw(self.image)
-        self.label_result.config(text="Draw a digit (0-9) to see predictions.")
-        self.proba_label.config(text="Draw a digit\nand click Predict")
-
-    def predict_digit(self):
-        img_tensor = preprocess_canvas_image(self.image)
-        if img_tensor is None:
-            self.label_result.config(text="Canvas is empty!")
-            self.proba_label.config(text="Canvas is empty!")
-            return
-
-        self.model.eval()
-        with torch.no_grad():
-            output = self.model(img_tensor)
-            probabilities = F.softmax(output, dim=1)[0]
-
-        probs_np = probabilities.numpy() * 100
-        ranked_predictions = sorted(enumerate(probs_np), key=lambda x: x[1], reverse=True)
-
-        ranking_text = "Rank    Digit    Confidence\n" + "-" * 26 + "\n"
-        for rank, (digit, prob) in enumerate(ranked_predictions, 1):
-            ranking_text += f" #{rank:<2}    [{digit}]     {prob:5.1f}%\n"
-
-        self.proba_label.config(text=ranking_text)
-
-        top_digit, top_conf = ranked_predictions[0]
-        second_digit, second_conf = ranked_predictions[1]
-        self.label_result.config(
-            text=f"Prediction: {top_digit} ({top_conf:.1f}%)  |  Runner-up: {second_digit} ({second_conf:.1f}%)"
-        )
-
-# ==========================================
-# 4. Web Interface Implementation (Cloud / Gradio)
-# ==========================================
-def launch_gradio_app(model):
-    import gradio as gr
-
-    def predict_gradio(sketch_dict):
-        image = sketch_dict.get("composite", sketch_dict.get("image", None)) if isinstance(sketch_dict, dict) else sketch_dict
-        if image is None:
-            return "Please draw a digit."
-
-        if isinstance(image, np.ndarray):
-            if image.ndim == 3 and image.shape[2] == 4:
-                alpha = image[:, :, 3]
-                pil_img = Image.fromarray(alpha.astype("uint8"))
-            else:
-                pil_img = Image.fromarray(image.astype("uint8")).convert("L")
-                img_np = np.array(pil_img)
-                if np.mean(img_np) > 127:
-                    pil_img = Image.fromarray(255 - img_np)
-        elif isinstance(image, Image.Image):
-            pil_img = image.convert("L")
-            img_np = np.array(pil_img)
-            if np.mean(img_np) > 127:
-                pil_img = Image.fromarray(255 - img_np)
-        else:
-            return "Invalid image format."
-
-        img_tensor = preprocess_canvas_image(pil_img)
-        if img_tensor is None:
-            return "Canvas is empty!"
-
-        model.eval()
-        with torch.no_grad():
-            output = model(img_tensor)
-            probabilities = F.softmax(output, dim=1)[0]
-
-        return {str(i): float(probabilities[i]) for i in range(10)}
-
-    canvas = gr.Sketchpad(canvas_size=(280, 280), image_mode="L")
-    interface = gr.Interface(
-        fn=predict_gradio,
-        inputs=canvas,
-        outputs=gr.Label(num_top_classes=3),
-        title="Handwritten Digit Recognizer",
-        description="Draw a digit (0–9) on the canvas to see predictions."
-    )
-
-    f = io.StringIO()
-    with contextlib.redirect_stdout(f):
-        app, local_url, share_url = interface.launch(share=True, prevent_thread_lock=True)
-
-    if share_url:
-        print(f"\n* Running on public URL: {share_url}\n")
-
-    interface.block_thread()
-
-# ==========================================
-# 5. Execution Entry Point
-# ==========================================
 if __name__ == "__main__":
-    if os.environ.get("DISPLAY", "") != "" or os.name == "nt":
-        try:
-            print("Opening desktop Tkinter GUI...")
-            DigitRecognizerGUI(model)
-        except Exception as e:
-            print(f"Tkinter failed ({e}). Falling back to Gradio web interface...")
-            launch_gradio_app(model)
-    else:
-        print("Headless cloud environment detected (e.g., Google Colab). Launching Gradio web interface...")
-        launch_gradio_app(model)
+    def run_localtunnel():
+        # Automatically spins up localtunnel to generate a public URL in Colab
+        subprocess.run(["npx", "localtunnel", "--port", "5000"])
+
+    threading.Thread(target=run_localtunnel, daemon=True).start()
+    app.run(host="127.0.0.1", port=5000, debug=False, use_reloader=False)
