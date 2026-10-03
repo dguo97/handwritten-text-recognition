@@ -6,11 +6,11 @@ A PyTorch implementation of a Convolutional Neural Network (CNN) designed for ha
 
 ## 🚀 How to Run in Google Colab
 
-You can run and test this project directly in Google Colab using free GPU acceleration without configuring a local environment.
+You can run and test this project directly in Google Colab using free GPU acceleration:
 
-1. **Open Google Colab:** Visit [colab.research.google.com](https://colab.research.google.com).
-
-2. **Setup and Run:** Create a new notebook (`+ New notebook`) and run the following commands in a code cell:
+1. Open [Google Colab](https://colab.research.google.com).
+2. Click **+ New notebook**.
+3. Copy and run the following code block in a cell:
 
 ```bash
 # Clone repository and enter project directory
