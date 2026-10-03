@@ -270,8 +270,7 @@ def launch_gradio_app(model):
 
         return {str(i): float(probabilities[i]) for i in range(10)}
 
-    canvas = gr.Sketchpad(type="numpy", image_mode="L")
-    
+    canvas = gr.Sketchpad(canvas_size=(280, 280), image_mode="L")
     interface = gr.Interface(
         fn=predict_gradio,
         inputs=canvas,
@@ -280,7 +279,14 @@ def launch_gradio_app(model):
         description="Draw a digit (0–9) on the canvas to see predictions."
     )
 
-    interface.launch(share=True)
+    f = io.StringIO()
+    with contextlib.redirect_stdout(f):
+        app, local_url, share_url = interface.launch(share=True, prevent_thread_lock=True)
+
+    if share_url:
+        print(f"\n* Running on public URL: {share_url}\n")
+
+    interface.block_thread()
 
 # ==========================================
 # 4. Execution Entry Point
