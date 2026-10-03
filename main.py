@@ -75,7 +75,7 @@ optimizer = optim.Adam(model.parameters(), lr=0.001)
 # 2. Model Training
 # ==========================================
 print("Training model (5 epochs)...")
-for epoch in range(5):
+for epoch in range(1):
     model.train()
     running_loss = 0.0
     for data, target in train_loader:
