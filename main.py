@@ -72,26 +72,32 @@ loss_fn = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # ==========================================
-# 2. Model Training
+# 2. Model Training (with checkpoint reuse)
 # ==========================================
-print("Training model (5 epochs)...")
-for epoch in range(5):
-    model.train()
-    running_loss = 0.0
-    for data, target in train_loader:
-        optimizer.zero_grad()
-        output = model(data)
-        loss = loss_fn(output, target)
-        loss.backward()
-        optimizer.step()
-        running_loss += loss.item()
-    
-    print(f"Epoch {epoch+1}/5 complete. Loss: {running_loss/len(train_loader):.4f}")
+weights_path = "mnist_cnn.pth"
+if os.path.exists(weights_path):
+    print(f"Found existing weights at '{weights_path}'. Loading model...")
+    model.load_state_dict(torch.load(weights_path))
+    model.eval()
+    print("Model loaded successfully from disk!")
+else:
+    print("Training model (5 epochs)...")
+    for epoch in range(5):
+        model.train()
+        running_loss = 0.0
+        for data, target in train_loader:
+            optimizer.zero_grad()
+            output = model(data)
+            loss = loss_fn(output, target)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+        
+        print(f"Epoch {epoch+1}/5 complete. Loss: {running_loss/len(train_loader):.4f}")
 
-model.eval()
-print("Training complete!")
-
-torch.save(model.state_dict(), "mnist_cnn.pth")
+    model.eval()
+    print("Training complete!")
+    torch.save(model.state_dict(), weights_path)
 
 def preprocess_canvas_image(pil_img):
     bbox = pil_img.getbbox()
