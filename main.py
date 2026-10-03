@@ -230,8 +230,15 @@ class DigitRecognizerGUI:
 def launch_gradio_app(model):
     import gradio as gr
 
-    def predict_gradio(sketch_dict):
-        image = sketch_dict.get("composite", sketch_dict.get("image", None)) if isinstance(sketch_dict, dict) else sketch_dict
+    def predict_gradio(sketch):
+        if sketch is None:
+            return "Please draw a digit."
+
+        if isinstance(sketch, dict):
+            image = sketch.get("composite", sketch.get("layers", [None])[0] if sketch.get("layers") else sketch.get("image", None))
+        else:
+            image = sketch
+
         if image is None:
             return "Please draw a digit."
 
@@ -263,7 +270,8 @@ def launch_gradio_app(model):
 
         return {str(i): float(probabilities[i]) for i in range(10)}
 
-    canvas = gr.Sketchpad(height=280, width=280, image_mode="L")
+    canvas = gr.Sketchpad(type="numpy", image_mode="L")
+    
     interface = gr.Interface(
         fn=predict_gradio,
         inputs=canvas,
@@ -272,14 +280,7 @@ def launch_gradio_app(model):
         description="Draw a digit (0–9) on the canvas to see predictions."
     )
 
-    f = io.StringIO()
-    with contextlib.redirect_stdout(f):
-        app, local_url, share_url = interface.launch(share=True, prevent_thread_lock=True)
-
-    if share_url:
-        print(f"\n* Running on public URL: {share_url}\n")
-
-    interface.block_thread()
+    interface.launch(share=True)
 
 # ==========================================
 # 4. Execution Entry Point
