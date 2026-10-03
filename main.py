@@ -15,7 +15,7 @@ from torchvision import datasets, transforms
 import tkinter as tk
 
 # ==========================================
-# 1. Architecture & Augmentation Setup
+# 1. Architecture & Transforms Setup
 # ==========================================
 train_transform = transforms.Compose([
     transforms.RandomRotation(12),
@@ -28,13 +28,6 @@ test_transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize((0.5,), (0.5,))
 ])
-
-print("Loading dataset...")
-train_data = datasets.MNIST(root='./data', train=True, download=True, transform=train_transform)
-test_data = datasets.MNIST(root='./data', train=False, download=True, transform=test_transform)
-
-train_loader = DataLoader(train_data, batch_size=64, shuffle=True)
-test_loader = DataLoader(test_data, batch_size=1000, shuffle=False)
 
 class EnhancedCNN(nn.Module):
     def __init__(self):
@@ -67,31 +60,43 @@ class EnhancedCNN(nn.Module):
         x = self.fc2(x)
         return x
 
-model = EnhancedCNN()
-loss_fn = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+def train_and_save_model(model_path="mnist_cnn.pth"):
+    print("Loading dataset for training...")
+    train_data = datasets.MNIST(root='./data', train=True, download=True, transform=train_transform)
+    train_loader = DataLoader(train_data, batch_size=64, shuffle=True)
 
-# ==========================================
-# 2. Model Training
-# ==========================================
-print("Training model (5 epochs)...")
-for epoch in range(5):
-    model.train()
-    running_loss = 0.0
-    for data, target in train_loader:
-        optimizer.zero_grad()
-        output = model(data)
-        loss = loss_fn(output, target)
-        loss.backward()
-        optimizer.step()
-        running_loss += loss.item()
-    
-    print(f"Epoch {epoch+1}/5 complete. Loss: {running_loss/len(train_loader):.4f}")
+    model = EnhancedCNN()
+    loss_fn = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-model.eval()
-print("Training complete!")
+    print("Training model (5 epochs)...")
+    for epoch in range(5):
+        model.train()
+        running_loss = 0.0
+        for data, target in train_loader:
+            optimizer.zero_grad()
+            output = model(data)
+            loss = loss_fn(output, target)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+        
+        print(f"Epoch {epoch+1}/5 complete. Loss: {running_loss/len(train_loader):.4f}")
 
-torch.save(model.state_dict(), "mnist_cnn.pth")
+    torch.save(model.state_dict(), model_path)
+    print(f"Training complete! Saved weights to {model_path}")
+    return model
+
+def load_or_train_model(model_path="mnist_cnn.pth"):
+    model = EnhancedCNN()
+    if os.path.exists(model_path):
+        print(f"Loading existing checkpoint from {model_path}...")
+        model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+        model.eval()
+    else:
+        model = train_and_save_model(model_path)
+        model.eval()
+    return model
 
 def preprocess_canvas_image(pil_img):
     bbox = pil_img.getbbox()
@@ -118,7 +123,7 @@ def preprocess_canvas_image(pil_img):
     return img_tensor
 
 # ==========================================
-# 3. GUI Implementation (Desktop / Tkinter)
+# 2. GUI Implementation (Desktop / Tkinter)
 # ==========================================
 class DigitRecognizerGUI:
     def __init__(self, model):
@@ -220,7 +225,7 @@ class DigitRecognizerGUI:
         )
 
 # ==========================================
-# 4. Web Interface Implementation (Cloud / Gradio)
+# 3. Web Interface Implementation (Gradio)
 # ==========================================
 def launch_gradio_app(model):
     import gradio as gr
@@ -258,7 +263,7 @@ def launch_gradio_app(model):
 
         return {str(i): float(probabilities[i]) for i in range(10)}
 
-    canvas = gr.Sketchpad(canvas_size=(280, 280), image_mode="L")
+    canvas = gr.Sketchpad(height=280, width=280, image_mode="L")
     interface = gr.Interface(
         fn=predict_gradio,
         inputs=canvas,
@@ -277,9 +282,11 @@ def launch_gradio_app(model):
     interface.block_thread()
 
 # ==========================================
-# 5. Execution Entry Point
+# 4. Execution Entry Point
 # ==========================================
 if __name__ == "__main__":
+    model = load_or_train_model("mnist_cnn.pth")
+
     if os.environ.get("DISPLAY", "") != "" or os.name == "nt":
         try:
             print("Opening desktop Tkinter GUI...")
