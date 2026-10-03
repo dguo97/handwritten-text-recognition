@@ -10,8 +10,6 @@ You can run and test this project directly in Google Colab using free GPU accele
 
 1. **Open Google Colab:** Click the badge below or visit [colab.research.google.com](https://colab.research.google.com).
 
-   [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/dguo97/handwritten-text-recognition/blob/main/main.py)
-
 2. **Setup and Run:** Create a new notebook (`+ New notebook`) and run the following commands in a code cell:
 
 ```bash
