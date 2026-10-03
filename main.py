@@ -15,11 +15,15 @@ from torchvision import datasets, transforms
 import tkinter as tk
 
 # ==========================================
-# 1. Architecture & Augmentation Setup
+# 1. Advanced Architecture & Augmentations
 # ==========================================
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
 train_transform = transforms.Compose([
     transforms.RandomRotation(12),
-    transforms.RandomAffine(degrees=0, translate=(0.08, 0.08), scale=(0.92, 1.08)),
+    transforms.RandomAffine(degrees=0, translate=(0.08, 0.08), scale=(0.90, 1.10), shear=8),
+    transforms.ElasticTransform(alpha=15.0, sigma=3.0),
     transforms.ToTensor(),
     transforms.Normalize((0.5,), (0.5,))
 ])
@@ -33,66 +37,119 @@ print("Loading dataset...")
 train_data = datasets.MNIST(root='./data', train=True, download=True, transform=train_transform)
 test_data = datasets.MNIST(root='./data', train=False, download=True, transform=test_transform)
 
-train_loader = DataLoader(train_data, batch_size=64, shuffle=True)
+train_loader = DataLoader(train_data, batch_size=128, shuffle=True)
 test_loader = DataLoader(test_data, batch_size=1000, shuffle=False)
 
-class EnhancedCNN(nn.Module):
-    def __init__(self):
-        super(EnhancedCNN, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(32)
-        
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(64)
-        
-        self.pool = nn.MaxPool2d(2, 2)
-        self.dropout1 = nn.Dropout(0.25)
-        
-        self.fc1 = nn.Linear(64 * 7 * 7, 128)
-        self.bn3 = nn.BatchNorm1d(128)
-        self.dropout2 = nn.Dropout(0.5)
-        self.fc2 = nn.Linear(128, 10)
+class SEBlock(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super(SEBlock, self).__init__()
+        self.fc1 = nn.Linear(channels, channels // reduction, bias=False)
+        self.fc2 = nn.Linear(channels // reduction, channels, bias=False)
 
     def forward(self, x):
-        x = F.relu(self.bn1(self.conv1(x)))
-        x = self.pool(x)
-        
-        x = F.relu(self.bn2(self.conv2(x)))
-        x = self.pool(x)
-        x = self.dropout1(x)
-        
-        x = torch.flatten(x, 1)
-        x = F.relu(self.bn3(self.fc1(x)))
-        x = self.dropout2(x)
-        x = self.fc2(x)
-        return x
+        b, c, _, _ = x.size()
+        y = x.view(b, c, -1).mean(dim=2)
+        y = F.relu(self.fc1(y))
+        y = torch.sigmoid(self.fc2(y)).view(b, c, 1, 1)
+        return x * y.expand_as(x)
 
-model = EnhancedCNN()
-loss_fn = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+class ResBlock(nn.Module):
+    def __init__(self, channels):
+        super(ResBlock, self).__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(channels)
+        self.se = SEBlock(channels)
+
+    def forward(self, x):
+        residual = x
+        out = F.silu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out = self.se(out)
+        out += residual
+        return F.silu(out)
+
+class HighAccuracyCNN(nn.Module):
+    def __init__(self):
+        super(HighAccuracyCNN, self).__init__()
+        self.in_conv = nn.Sequential(
+            nn.Conv2d(1, 64, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.SiLU()
+        )
+        self.res1 = ResBlock(64)
+        self.pool1 = nn.MaxPool2d(2, 2)
+        
+        self.mid_conv = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.SiLU()
+        )
+        self.res2 = ResBlock(128)
+        self.pool2 = nn.MaxPool2d(2, 2)
+
+        self.head = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(128 * 7 * 7, 256),
+            nn.BatchNorm1d(256),
+            nn.SiLU(),
+            nn.Dropout(0.4),
+            nn.Linear(256, 10)
+        )
+
+    def forward(self, x):
+        x = self.in_conv(x)
+        x = self.res1(x)
+        x = self.pool1(x)
+        x = self.mid_conv(x)
+        x = self.res2(x)
+        x = self.pool2(x)
+        return self.head(x)
+
+model = HighAccuracyCNN().to(device)
+epochs = 10
+loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
+optimizer = optim.AdamW(model.parameters(), lr=0.003, weight_decay=1e-4)
+scheduler = optim.lr_scheduler.OneCycleLR(
+    optimizer, max_lr=0.003, steps_per_epoch=len(train_loader), epochs=epochs
+)
 
 # ==========================================
-# 2. Model Training
+# 2. Model Training with Progress Logging
 # ==========================================
-print("Training model (5 epochs)...")
-for epoch in range(5):
+print(f"Training high-accuracy ResNet model ({epochs} epochs)...")
+for epoch in range(epochs):
     model.train()
     running_loss = 0.0
+    correct = 0
+    total = 0
+
     for data, target in train_loader:
+        data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         output = model(data)
         loss = loss_fn(output, target)
         loss.backward()
         optimizer.step()
+        scheduler.step()
+
         running_loss += loss.item()
-    
-    print(f"Epoch {epoch+1}/5 complete. Loss: {running_loss/len(train_loader):.4f}")
+        preds = output.argmax(dim=1)
+        correct += (preds == target).sum().item()
+        total += target.size(0)
+
+    train_acc = (correct / total) * 100
+    avg_loss = running_loss / len(train_loader)
+    print(f"Epoch {epoch+1:02d}/{epochs:02d} | Loss: {avg_loss:.4f} | Training Acc: {train_acc:.2f}%")
 
 model.eval()
-print("Training complete!")
+print("Training complete! Model saved to mnist_high_accuracy.pth")
+torch.save(model.state_dict(), "mnist_high_accuracy.pth")
 
-torch.save(model.state_dict(), "mnist_cnn.pth")
-
+# ==========================================
+# 3. Canvas Preprocessing Helper
+# ==========================================
 def preprocess_canvas_image(pil_img):
     bbox = pil_img.getbbox()
     if bbox is None:
@@ -115,16 +172,16 @@ def preprocess_canvas_image(pil_img):
 
     img_tensor = torch.tensor(img_np, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
     img_tensor = (img_tensor - 0.5) / 0.5
-    return img_tensor
+    return img_tensor.to(device)
 
 # ==========================================
-# 3. GUI Implementation (Desktop / Tkinter)
+# 4. Desktop Tkinter GUI Implementation
 # ==========================================
 class DigitRecognizerGUI:
     def __init__(self, model):
         self.model = model
         self.root = tk.Tk()
-        self.root.title("Handwritten Digit Recognizer")
+        self.root.title("Handwritten Digit Recognizer (High Accuracy ResNet)")
 
         main_frame = tk.Frame(self.root)
         main_frame.pack(padx=10, pady=10)
@@ -204,7 +261,7 @@ class DigitRecognizerGUI:
             output = self.model(img_tensor)
             probabilities = F.softmax(output, dim=1)[0]
 
-        probs_np = probabilities.numpy() * 100
+        probs_np = probabilities.cpu().numpy() * 100
         ranked_predictions = sorted(enumerate(probs_np), key=lambda x: x[1], reverse=True)
 
         ranking_text = "Rank    Digit    Confidence\n" + "-" * 26 + "\n"
@@ -220,7 +277,7 @@ class DigitRecognizerGUI:
         )
 
 # ==========================================
-# 4. Web Interface Implementation (Cloud / Gradio)
+# 5. Gradio Fallback for Headless Environments
 # ==========================================
 def launch_gradio_app(model):
     import gradio as gr
@@ -269,15 +326,15 @@ def launch_gradio_app(model):
 
     f = io.StringIO()
     with contextlib.redirect_stdout(f):
-        app, local_url, share_url = interface.launch(share=True, prevent_thread_lock=True)
+        app, local_url, share_url = interface.launch(share=True, prevent_thread_lock=True, quiet=True)
 
     if share_url:
-        print(f"\n* Running on public URL: {share_url}\n")
+        print(share_url)
 
     interface.block_thread()
 
 # ==========================================
-# 5. Execution Entry Point
+# 6. Execution Entry Point
 # ==========================================
 if __name__ == "__main__":
     if os.environ.get("DISPLAY", "") != "" or os.name == "nt":
@@ -288,5 +345,5 @@ if __name__ == "__main__":
             print(f"Tkinter failed ({e}). Falling back to Gradio web interface...")
             launch_gradio_app(model)
     else:
-        print("Headless cloud environment detected (e.g., Google Colab). Launching Gradio web interface...")
+        print("Headless cloud environment detected. Launching Gradio web interface...")
         launch_gradio_app(model)
