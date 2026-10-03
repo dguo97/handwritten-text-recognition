@@ -14,7 +14,7 @@ You can run and test this project directly in Google Colab using free GPU accele
 
 ```bash
 # Clone repository and enter project directory
-!git clone [https://github.com/dguo97/handwritten-text-recognition.git](https://github.com/dguo97/handwritten-text-recognition.git)
+!git clone https://github.com/dguo97/handwritten-text-recognition.git
 %cd handwritten-text-recognition
 
 # Install dependencies
