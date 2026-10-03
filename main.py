@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -85,10 +86,38 @@ for epoch in range(5):
     print(f"Epoch {epoch+1}/5 complete. Loss: {running_loss/len(train_loader):.4f}")
 
 model.eval()
-print("Training complete! Opening interactive drawing window...")
+print("Training complete!")
+
+# Save weights checkpoint
+torch.save(model.state_dict(), "mnist_cnn.pth")
+
+# Helper function for preprocessing drawing input
+def preprocess_canvas_image(pil_img):
+    bbox = pil_img.getbbox()
+    if bbox is None:
+        return None
+
+    blurred = pil_img.filter(ImageFilter.GaussianBlur(radius=1.5))
+    cropped = blurred.crop(bbox)
+    cropped.thumbnail((20, 20), Image.Resampling.BILINEAR)
+
+    centered_img = Image.new("L", (28, 28), "black")
+    offset = ((28 - cropped.width) // 2, (28 - cropped.height) // 2)
+    centered_img.paste(cropped, offset)
+
+    img_np = np.array(centered_img, dtype=np.float32) / 255.0
+    cy, cx = center_of_mass(img_np)
+    if not (np.isnan(cy) or np.isnan(cx)):
+        shift_x = np.round(14.0 - cx).astype(int)
+        shift_y = np.round(14.0 - cy).astype(int)
+        img_np = np.roll(img_np, (shift_y, shift_x), axis=(0, 1))
+
+    img_tensor = torch.tensor(img_np).unsqueeze(0).unsqueeze(0)
+    img_tensor = (img_tensor - 0.5) / 0.5
+    return img_tensor
 
 # ==========================================
-# 3. GUI with Ordered Probabilities Output
+# 3. GUI Implementation (Desktop / Tkinter)
 # ==========================================
 class DigitRecognizerGUI:
     def __init__(self, model):
@@ -96,11 +125,9 @@ class DigitRecognizerGUI:
         self.root = tk.Tk()
         self.root.title("Handwritten Digit Recognizer")
 
-        # Main horizontal container
         main_frame = tk.Frame(self.root)
         main_frame.pack(padx=10, pady=10)
 
-        # Left panel: Drawing canvas & control buttons
         left_frame = tk.Frame(main_frame)
         left_frame.pack(side=tk.LEFT, padx=10)
 
@@ -125,7 +152,6 @@ class DigitRecognizerGUI:
         self.btn_clear = tk.Button(btn_frame, text="Clear", command=self.clear_canvas, font=("Arial", 11))
         self.btn_clear.pack(side=tk.LEFT, padx=5)
 
-        # Right panel: Rank-ordered probability list
         right_frame = tk.LabelFrame(main_frame, text=" Class Probabilities (High → Low) ", font=("Arial", 11, "bold"))
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10)
 
@@ -138,7 +164,6 @@ class DigitRecognizerGUI:
         )
         self.proba_label.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Top summary label below the drawing board
         self.label_result = tk.Label(self.root, text="Draw a digit (0-9) to see predictions.", font=("Arial", 13, "bold"))
         self.label_result.pack(pady=10)
 
@@ -166,62 +191,78 @@ class DigitRecognizerGUI:
         self.label_result.config(text="Draw a digit (0-9) to see predictions.")
         self.proba_label.config(text="Draw a digit\nand click Predict")
 
-    def center_image_by_mass(self, img_np):
-        cy, cx = center_of_mass(img_np)
-        if np.isnan(cy) or np.isnan(cx):
-            return img_np
-        
-        rows, cols = img_np.shape
-        shift_x = np.round(cols / 2.0 - cx).astype(int)
-        shift_y = np.round(rows / 2.0 - cy).astype(int)
-        
-        return np.roll(img_np, (shift_y, shift_x), axis=(0, 1))
-
     def predict_digit(self):
-        bbox = self.image.getbbox()
-        if bbox is None:
+        img_tensor = preprocess_canvas_image(self.image)
+        if img_tensor is None:
             self.label_result.config(text="Canvas is empty!")
             self.proba_label.config(text="Canvas is empty!")
             return
 
-        # Preprocessing pipeline
-        blurred = self.image.filter(ImageFilter.GaussianBlur(radius=1.5))
-        cropped = blurred.crop(bbox)
-        cropped.thumbnail((20, 20), Image.Resampling.BILINEAR)
-
-        centered_img = Image.new("L", (28, 28), "black")
-        offset = ((28 - cropped.width) // 2, (28 - cropped.height) // 2)
-        centered_img.paste(cropped, offset)
-
-        img_array = np.array(centered_img, dtype=np.float32) / 255.0
-        img_array = self.center_image_by_mass(img_array)
-
-        img_tensor = torch.tensor(img_array).unsqueeze(0).unsqueeze(0)
-        img_tensor = (img_tensor - 0.5) / 0.5
-
-        # Run inference
         self.model.eval()
         with torch.no_grad():
             output = self.model(img_tensor)
             probabilities = F.softmax(output, dim=1)[0]
 
-        # Convert probabilities to a sorted list of (digit, percentage) tuples
         probs_np = probabilities.numpy() * 100
         ranked_predictions = sorted(enumerate(probs_np), key=lambda x: x[1], reverse=True)
 
-        # Build side panel ranking text
-        ranking_text = "Rank  Digit  Confidence\n" + "-" * 24 + "\n"
+        ranking_text = "Rank  Digit    Confidence\n" + "-" * 26 + "\n"
         for rank, (digit, prob) in enumerate(ranked_predictions, 1):
             ranking_text += f" #{rank:<2}    [{digit}]     {prob:5.1f}%\n"
 
         self.proba_label.config(text=ranking_text)
 
-        # Update summary prediction label
         top_digit, top_conf = ranked_predictions[0]
         second_digit, second_conf = ranked_predictions[1]
         self.label_result.config(
             text=f"Prediction: {top_digit} ({top_conf:.1f}%)  |  Runner-up: {second_digit} ({second_conf:.1f}%)"
         )
 
+# ==========================================
+# 4. Web Interface Implementation (Cloud / Gradio)
+# ==========================================
+def launch_gradio_app(model):
+    import gradio as gr
+
+    def predict_gradio(sketch_dict):
+        image = sketch_dict["composite"]
+        if image is None:
+            return "Please draw a digit."
+        
+        pil_img = Image.fromarray(image.astype("uint8")).convert("L")
+        img_tensor = preprocess_canvas_image(pil_img)
+        if img_tensor is None:
+            return "Canvas is empty!"
+
+        model.eval()
+        with torch.no_grad():
+            output = model(img_tensor)
+            probabilities = F.softmax(output, dim=1)[0]
+
+        return {str(i): float(probabilities[i]) for i in range(10)}
+
+    canvas = gr.Sketchpad(canvas_size=(280, 280), image_mode="L")
+    interface = gr.Interface(
+        fn=predict_gradio,
+        inputs=canvas,
+        outputs=gr.Label(num_top_classes=3),
+        title="Handwritten Digit Recognizer",
+        description="Draw a digit (0–9) on the canvas to see predictions."
+    )
+    interface.launch(share=True)
+
+# ==========================================
+# 5. Execution Entry Point
+# ==========================================
 if __name__ == "__main__":
-    DigitRecognizerGUI(model)
+    # If running on Windows desktop or an environment with a DISPLAY server, open Tkinter
+    if os.environ.get("DISPLAY", "") != "" or os.name == "nt":
+        try:
+            print("Opening desktop Tkinter GUI...")
+            DigitRecognizerGUI(model)
+        except Exception as e:
+            print(f"Tkinter failed ({e}). Falling back to Gradio web interface...")
+            launch_gradio_app(model)
+    else:
+        print("Headless cloud environment detected (e.g., Google Colab). Launching Gradio web interface...")
+        launch_gradio_app(model)
