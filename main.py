@@ -72,7 +72,7 @@ loss_fn = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # ==========================================
-# 2. Model Training (with checkpoint reuse)
+# 2. Model Training & Evaluation
 # ==========================================
 weights_path = "mnist_cnn.pth"
 if os.path.exists(weights_path):
@@ -98,6 +98,20 @@ else:
     model.eval()
     print("Training complete!")
     torch.save(model.state_dict(), weights_path)
+
+print("Evaluating model on test data...")
+model.eval()
+correct = 0
+total = 0
+with torch.no_grad():
+    for data, target in test_loader:
+        output = model(data)
+        _, predicted = torch.max(output.data, 1)
+        total += target.size(0)
+        correct += (predicted == target).sum().item()
+
+accuracy = 100 * correct / total
+print(f"Test Accuracy: {accuracy:.2f}% ({correct}/{total} correct)")
 
 def preprocess_canvas_image(pil_img):
     bbox = pil_img.getbbox()
@@ -215,7 +229,7 @@ class DigitRecognizerGUI:
 
         ranking_text = "Rank    Digit    Confidence\n" + "-" * 26 + "\n"
         for rank, (digit, prob) in enumerate(ranked_predictions, 1):
-            ranking_text += f" #{rank:<2}    [{digit}]     {prob:5.1f}%\n"
+            ranking_text += f" #{rank:<2}    [{digit}]      {prob:5.1f}%\n"
 
         self.proba_label.config(text=ranking_text)
 
